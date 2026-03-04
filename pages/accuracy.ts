@@ -207,7 +207,7 @@ function render() {
   requestAnimationFrame(() => {
     const { total, mismatches } = runSweep()
     const matchCount = total - mismatches.length
-    const pct = ((matchCount / total) * 100).toFixed(1)
+    const pct = ((matchCount / total) * 100).toFixed(2)
 
     let html = `
       <div class="summary">
