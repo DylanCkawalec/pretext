@@ -203,7 +203,12 @@ describe('layout invariants', () => {
 
     const withLines = layoutWithLines(prepared, widthOfHello, LINE_HEIGHT)
     expect(withLines.lineCount).toBe(1)
-    expect(withLines.lines).toEqual([{ text: 'Hello', width: widthOfHello }])
+    expect(withLines.lines).toEqual([{
+      text: 'Hello',
+      width: widthOfHello,
+      start: { segmentIndex: 0, graphemeIndex: 0 },
+      end: { segmentIndex: 1, graphemeIndex: 0 },
+    }])
   })
 
   test('breaks long words at grapheme boundaries and keeps both layout APIs aligned', () => {
@@ -218,6 +223,8 @@ describe('layout invariants', () => {
     expect(rich.lineCount).toBe(plain.lineCount)
     expect(rich.height).toBe(plain.height)
     expect(rich.lines.map(line => line.text).join('')).toBe('Superlongword')
+    expect(rich.lines[0]!.start).toEqual({ segmentIndex: 0, graphemeIndex: 0 })
+    expect(rich.lines.at(-1)!.end).toEqual({ segmentIndex: 1, graphemeIndex: 0 })
   })
 
   test('mixed-direction text is a stable smoke test', () => {

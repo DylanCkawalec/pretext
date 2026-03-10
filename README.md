@@ -29,7 +29,7 @@ const { height, lineCount } = layout(block, containerWidth, 19)
 - Chat or messaging UIs: recompute bubble heights on every width change without touching the DOM layout engine.
 - Loading skeletons and cumulative layout shift reduction: reserve the right amount of vertical space before the final text renders.
 - Responsive card/layout decisions: switch between compact and expanded variants based on predicted text height.
-- Canvas or custom renderers: use `layoutWithLines()` to get browser-like wrapping without relying on DOM text nodes.
+- Canvas or custom renderers: use `layoutWithLines()` to get browser-like wrapping plus per-line segment/grapheme cursors, without relying on DOM text nodes.
 
 ## Performance
 

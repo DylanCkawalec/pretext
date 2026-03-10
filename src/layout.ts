@@ -664,6 +664,11 @@ export type PreparedTextWithSegments = PreparedText & {
   segments: string[] // Segment text aligned with the parallel arrays, e.g. ['hello', ' ', 'world']
 }
 
+export type LayoutCursor = {
+  segmentIndex: number // Segment index in `segments`
+  graphemeIndex: number // Grapheme index within that segment; `0` at segment boundaries
+}
+
 export type LayoutResult = {
   lineCount: number // Number of wrapped lines, e.g. 3
   height: number // Total block height, e.g. lineCount * lineHeight = 57
@@ -672,6 +677,8 @@ export type LayoutResult = {
 export type LayoutLine = {
   text: string // Full text content of this line, e.g. 'hello world'
   width: number // Measured width of this line, e.g. 87.5
+  start: LayoutCursor // Inclusive start cursor in prepared segments/graphemes
+  end: LayoutCursor // Exclusive end cursor in prepared segments/graphemes
 }
 
 export type LayoutLinesResult = LayoutResult & {
@@ -829,6 +836,133 @@ export function prepareWithSegments(text: string, font: string): PreparedTextWit
   return prepareInternal(text, font, true) as PreparedTextWithSegments
 }
 
+type InternalLayoutLine = {
+  startSegmentIndex: number
+  startGraphemeIndex: number
+  endSegmentIndex: number
+  endGraphemeIndex: number
+  width: number
+}
+
+function walkPreparedLines(
+  prepared: PreparedText,
+  maxWidth: number,
+  onLine?: (line: InternalLayoutLine) => void,
+): number {
+  const { widths, isSpace: isSp, breakableWidths } = prepared
+  if (widths.length === 0) return 0
+
+  let lineCount = 0
+  let lineW = 0
+  let hasContent = false
+  let lineStartSegmentIndex = 0
+  let lineStartGraphemeIndex = 0
+  let lineEndSegmentIndex = 0
+  let lineEndGraphemeIndex = 0
+
+  function emitCurrentLine(): void {
+    lineCount++
+    onLine?.({
+      startSegmentIndex: lineStartSegmentIndex,
+      startGraphemeIndex: lineStartGraphemeIndex,
+      endSegmentIndex: lineEndSegmentIndex,
+      endGraphemeIndex: lineEndGraphemeIndex,
+      width: lineW,
+    })
+    lineW = 0
+    hasContent = false
+  }
+
+  function startLineAtSegment(segmentIndex: number, width: number): void {
+    hasContent = true
+    lineStartSegmentIndex = segmentIndex
+    lineStartGraphemeIndex = 0
+    lineEndSegmentIndex = segmentIndex + 1
+    lineEndGraphemeIndex = 0
+    lineW = width
+  }
+
+  function startLineAtGrapheme(segmentIndex: number, graphemeIndex: number, width: number): void {
+    hasContent = true
+    lineStartSegmentIndex = segmentIndex
+    lineStartGraphemeIndex = graphemeIndex
+    lineEndSegmentIndex = segmentIndex
+    lineEndGraphemeIndex = graphemeIndex + 1
+    lineW = width
+  }
+
+  function appendWholeSegment(segmentIndex: number, width: number): void {
+    if (!hasContent) {
+      startLineAtSegment(segmentIndex, width)
+      return
+    }
+    lineW += width
+    lineEndSegmentIndex = segmentIndex + 1
+    lineEndGraphemeIndex = 0
+  }
+
+  function appendBreakableSegment(segmentIndex: number): void {
+    const gWidths = breakableWidths[segmentIndex]!
+    for (let g = 0; g < gWidths.length; g++) {
+      const gw = gWidths[g]!
+
+      if (!hasContent) {
+        startLineAtGrapheme(segmentIndex, g, gw)
+        continue
+      }
+
+      if (lineW + gw > maxWidth + lineFitEpsilon) {
+        emitCurrentLine()
+        startLineAtGrapheme(segmentIndex, g, gw)
+      } else {
+        lineW += gw
+        lineEndSegmentIndex = segmentIndex
+        lineEndGraphemeIndex = g + 1
+      }
+    }
+
+    if (hasContent && lineEndSegmentIndex === segmentIndex && lineEndGraphemeIndex === gWidths.length) {
+      lineEndSegmentIndex = segmentIndex + 1
+      lineEndGraphemeIndex = 0
+    }
+  }
+
+  for (let i = 0; i < widths.length; i++) {
+    const w = widths[i]!
+
+    if (!hasContent) {
+      if (w > maxWidth && breakableWidths[i] !== null) {
+        appendBreakableSegment(i)
+      } else {
+        startLineAtSegment(i, w)
+      }
+      continue
+    }
+
+    const newW = lineW + w
+
+    if (newW > maxWidth + lineFitEpsilon) {
+      if (isSp[i]) continue
+
+      if (w > maxWidth && breakableWidths[i] !== null) {
+        emitCurrentLine()
+        appendBreakableSegment(i)
+      } else {
+        emitCurrentLine()
+        startLineAtSegment(i, w)
+      }
+    } else {
+      appendWholeSegment(i, w)
+    }
+  }
+
+  if (hasContent) {
+    emitCurrentLine()
+  }
+
+  return lineCount
+}
+
 // Layout prepared text at a given max width and caller-provided lineHeight.
 // Pure arithmetic on cached widths — no canvas calls, no DOM reads, no string
 // operations, no allocations.
@@ -839,70 +973,52 @@ export function prepareWithSegments(text: string, font: string): PreparedTextWit
 //   - Trailing whitespace hangs past the line edge (doesn't trigger breaks)
 //   - Segments wider than maxWidth are broken at grapheme boundaries
 export function layout(prepared: PreparedText, maxWidth: number, lineHeight: number): LayoutResult {
-  const { widths, isSpace: isSp, breakableWidths } = prepared
-  if (widths.length === 0) return { lineCount: 0, height: 0 }
-
-  let lineCount = 0
-  let lineW = 0
-  let hasContent = false
-
-  for (let i = 0; i < widths.length; i++) {
-    const w = widths[i]!
-
-    if (!hasContent) {
-      if (w > maxWidth && breakableWidths[i] !== null) {
-        const gWidths = breakableWidths[i]!
-        lineW = 0
-        for (let g = 0; g < gWidths.length; g++) {
-          const gw = gWidths[g]!
-          if (lineW > 0 && lineW + gw > maxWidth + lineFitEpsilon) {
-            lineCount++
-            lineW = gw
-          } else {
-            if (lineW === 0) lineCount++
-            lineW += gw
-          }
-        }
-      } else {
-        lineW = w
-        lineCount++
-      }
-      hasContent = true
-      continue
-    }
-
-    const newW = lineW + w
-
-    if (newW > maxWidth + lineFitEpsilon) {
-      if (isSp[i]) continue // trailing whitespace hangs (CSS behavior)
-
-      if (w > maxWidth && breakableWidths[i] !== null) {
-        const gWidths = breakableWidths[i]!
-        lineW = 0
-        for (let g = 0; g < gWidths.length; g++) {
-          const gw = gWidths[g]!
-          if (lineW > 0 && lineW + gw > maxWidth + lineFitEpsilon) {
-            lineCount++
-            lineW = gw
-          } else {
-            if (lineW === 0) lineCount++
-            lineW += gw
-          }
-        }
-      } else {
-        lineCount++
-        lineW = w
-      }
-    } else {
-      lineW = newW
-    }
-  }
-
-  if (!hasContent) {
-    lineCount++
-  }
-
+  const lineCount = walkPreparedLines(prepared, maxWidth)
   return { lineCount, height: lineCount * lineHeight }
+}
+
+function getSegmentGraphemes(
+  segmentIndex: number,
+  segments: string[],
+  cache: Map<number, string[]>,
+): string[] {
+  let graphemes = cache.get(segmentIndex)
+  if (graphemes !== undefined) return graphemes
+
+  graphemes = []
+  for (const gs of sharedGraphemeSegmenter.segment(segments[segmentIndex]!)) {
+    graphemes.push(gs.segment)
+  }
+  cache.set(segmentIndex, graphemes)
+  return graphemes
+}
+
+function buildLineTextFromRange(
+  segments: string[],
+  cache: Map<number, string[]>,
+  startSegmentIndex: number,
+  startGraphemeIndex: number,
+  endSegmentIndex: number,
+  endGraphemeIndex: number,
+): string {
+  let text = ''
+
+  for (let i = startSegmentIndex; i < endSegmentIndex; i++) {
+    if (i === startSegmentIndex && startGraphemeIndex > 0) {
+      text += getSegmentGraphemes(i, segments, cache).slice(startGraphemeIndex).join('')
+    } else {
+      text += segments[i]!
+    }
+  }
+
+  if (endGraphemeIndex > 0) {
+    text += getSegmentGraphemes(endSegmentIndex, segments, cache).slice(
+      startSegmentIndex === endSegmentIndex ? startGraphemeIndex : 0,
+      endGraphemeIndex,
+    ).join('')
+  }
+
+  return text
 }
 
 // Rich layout API for callers that want the actual line contents and widths.
@@ -910,96 +1026,31 @@ export function layout(prepared: PreparedText, maxWidth: number, lineHeight: num
 // decisions, but keeps extra per-line bookkeeping so it should stay off the
 // resize hot path.
 export function layoutWithLines(prepared: PreparedTextWithSegments, maxWidth: number, lineHeight: number): LayoutLinesResult {
-  const { widths, isSpace: isSp, breakableWidths, segments } = prepared
   const lines: LayoutLine[] = []
-  if (widths.length === 0) return { lineCount: 0, height: 0, lines }
+  if (prepared.widths.length === 0) return { lineCount: 0, height: 0, lines }
 
-  let lineCount = 0
-  let lineW = 0
-  let hasContent = false
-  let currentLine = ''
-
-  function pushCurrentLine(): void {
-    lines.push({ text: currentLine, width: lineW })
-    currentLine = ''
-  }
-
-  function layoutBreakableSegment(segIndex: number, closeExistingLine: boolean): void {
-    const gWidths = breakableWidths[segIndex]!
-    const gTexts: string[] = []
-    let gTextCount = 0
-    for (const gs of sharedGraphemeSegmenter.segment(segments[segIndex]!)) {
-      gTexts[gTextCount] = gs.segment
-      gTextCount++
-    }
-
-    if (closeExistingLine) pushCurrentLine()
-
-    lineW = 0
-    currentLine = ''
-
-    for (let g = 0; g < gWidths.length; g++) {
-      const gw = gWidths[g]!
-      const gText = gTexts[g]!
-
-      if (lineW > 0 && lineW + gw > maxWidth + lineFitEpsilon) {
-        pushCurrentLine()
-        lineCount++
-        lineW = gw
-        currentLine = gText
-      } else {
-        if (lineW === 0) {
-          lineCount++
-          lineW = gw
-          currentLine = gText
-        } else {
-          lineW += gw
-          currentLine += gText
-        }
-      }
-    }
-  }
-
-  for (let i = 0; i < widths.length; i++) {
-    const w = widths[i]!
-    const segText = segments[i]!
-
-    if (!hasContent) {
-      if (w > maxWidth && breakableWidths[i] !== null) {
-        layoutBreakableSegment(i, false)
-      } else {
-        lineW = w
-        lineCount++
-        currentLine = segText
-      }
-      hasContent = true
-      continue
-    }
-
-    const newW = lineW + w
-
-    if (newW > maxWidth + lineFitEpsilon) {
-      if (isSp[i]) continue
-
-      if (w > maxWidth && breakableWidths[i] !== null) {
-        layoutBreakableSegment(i, true)
-      } else {
-        pushCurrentLine()
-        lineCount++
-        lineW = w
-        currentLine = segText
-      }
-    } else {
-      lineW = newW
-      currentLine += segText
-    }
-  }
-
-  if (!hasContent) {
-    lineCount++
-  } else {
-    pushCurrentLine()
-  }
+  const graphemeCache = new Map<number, string[]>()
+  const lineCount = walkPreparedLines(prepared, maxWidth, line => {
+    lines.push({
+      text: buildLineTextFromRange(
+        prepared.segments,
+        graphemeCache,
+        line.startSegmentIndex,
+        line.startGraphemeIndex,
+        line.endSegmentIndex,
+        line.endGraphemeIndex,
+      ),
+      width: line.width,
+      start: {
+        segmentIndex: line.startSegmentIndex,
+        graphemeIndex: line.startGraphemeIndex,
+      },
+      end: {
+        segmentIndex: line.endSegmentIndex,
+        graphemeIndex: line.endGraphemeIndex,
+      },
+    })
+  })
 
   return { lineCount, height: lineCount * lineHeight, lines }
 }

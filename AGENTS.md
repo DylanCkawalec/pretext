@@ -59,7 +59,7 @@ Internal notes for contributors and agents. Use `README.md` as the public source
 - Locale switch: expose a way to reinitialize the hoisted segmenters and clear cache for a new locale.
 - Decide whether line-fit tolerance should stay as a browser-specific shim or move to runtime calibration alongside emoji correction.
 - If a future Arabic corpus still exposes misses after preprocessing and corpus cleanup, decide whether that needs a richer break-policy model or a truly shaping-aware architecture beyond segment-sum layout.
-- `layoutWithLines()` may want ranges/indices instead of `{ text, width }` to avoid materializing substrings.
+- `layoutWithLines()` now returns line boundary cursors (`start` / `end`) in addition to `{ text, width }`; keep that data model useful for future manual reflow work.
 - ASCII fast path could skip some CJK, bidi, and emoji overhead.
 - Benchmark methodology still needs review.
 - `pages/demo.html` is still a placeholder.
